@@ -5,6 +5,9 @@
 #   PROXY_TEST_URL          探测目标，默认 https://www.google.com/generate_204
 #   PROXY_REQUIRED          true 时探测失败则退出 1
 #   PROXY_PORT              本地 mixed-port，默认 7890
+#   PROXY_DNS_POLICY        可选，节点域名专用解析器，格式 "域名通配=解析器"，
+#                           多条用英文逗号分隔。部分机场使用私有 TLD（如 *.qpon），
+#                           公共 DNS 无法解析，需要订阅提供的专用解析器。
 
 set -euo pipefail
 
@@ -18,6 +21,7 @@ PROXY_PORT="${PROXY_PORT:-7890}"
 PROXY_TEST_URL="${PROXY_TEST_URL:-https://www.google.com/generate_204}"
 MIHOMO_VERSION="${MIHOMO_VERSION:-v1.19.0}"
 PROXY_REQUIRED="${PROXY_REQUIRED:-false}"
+PROXY_DNS_POLICY="${PROXY_DNS_POLICY:-}"
 
 mkdir -p "${PROXY_DIR}"
 cd "${PROXY_DIR}"
@@ -36,6 +40,31 @@ gunzip -f "${ARCHIVE}"
 chmod +x "mihomo-linux-amd64-${MIHOMO_VERSION}"
 MIHOMO_BIN="${PROXY_DIR}/mihomo-linux-amd64-${MIHOMO_VERSION}"
 
+# mihomo 只读取主配置的 dns 段，不会继承 proxy-providers 订阅内的 dns 配置。
+# 若节点域名使用私有 TLD，需在此显式声明专用解析器，否则节点全部解析失败。
+DNS_SECTION=""
+if [[ -n "${PROXY_DNS_POLICY}" ]]; then
+	DNS_SECTION=$(
+		printf 'dns:\n'
+		printf '  enable: true\n'
+		printf '  nameserver:\n'
+		printf '    - 223.5.5.5\n'
+		printf '    - 8.8.8.8\n'
+		printf '  nameserver-policy:\n'
+		while IFS= read -r policy; do
+			policy="${policy#"${policy%%[![:space:]]*}"}"
+			policy="${policy%"${policy##*[![:space:]]}"}"
+			[[ -z "${policy}" ]] && continue
+			if [[ "${policy}" != *=* ]]; then
+				echo "[WARN] Ignored malformed PROXY_DNS_POLICY entry: ${policy}" >&2
+				continue
+			fi
+			printf '    "%s": %s\n' "${policy%%=*}" "${policy#*=}"
+		done <<< "${PROXY_DNS_POLICY//,/$'\n'}"
+	)
+	echo "[INFO] Custom DNS policy enabled for node resolution"
+fi
+
 cat > config.yaml <<EOF
 mixed-port: ${PROXY_PORT}
 allow-lan: false
@@ -43,7 +72,7 @@ ipv6: false
 mode: rule
 log-level: warning
 unified-delay: true
-
+${DNS_SECTION}
 proxy-providers:
   subscription:
     type: http

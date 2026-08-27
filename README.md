@@ -277,6 +277,7 @@
 在仓库 Settings -> Environments -> production -> Environment secrets 中添加：
 
 - `PROXY_SUBSCRIPTION_URL`：Clash/Mihomo 订阅链接。设置后，workflow 会运行 `scripts/setup_mihomo_proxy.sh`，启动本地代理并写入 `CHECKIN_PROXY_URL`。
+- `PROXY_DNS_POLICY`（可选）：节点域名专用解析器，格式 `域名通配=解析器`，多条用英文逗号分隔。
 
 本地运行时也可以直接使用已有代理：
 
@@ -285,7 +286,19 @@ CHECKIN_PROXY_URL=http://127.0.0.1:7890
 PROVIDERS={"agentrouter":{"use_proxy":true}}
 ```
 
-如果使用订阅脚本，默认会用 `https://www.google.com/generate_204` 测试代理连通性；也可以通过 `PROXY_TEST_URL` 覆盖。
+如果使用订阅脚本，默认会用 `https://www.google.com/generate_204` 测试代理连通性；也可以通过 `PROXY_TEST_URL` 覆盖。建议改为目标站点的免登录接口（例如 `https://agentrouter.org/api/status`），这样 `url-test` 选出的是能访问目标站点的节点。
+
+### 节点域名无法解析（`PROXY_DNS_POLICY`）
+
+部分机场的节点地址使用私有 TLD（例如 `*.v51124-4.qpon`），公共 DNS 无法解析。订阅文件内通常自带 `dns.nameserver-policy` 指向专用解析器，但 mihomo 只读取主配置的 `dns` 段，不会继承 `proxy-providers` 订阅内的 DNS 配置，导致所有节点解析失败并回落到 `127.127.127.x`，表现为 `connection refused` 或 `ERR_CONNECTION_CLOSED`。
+
+此时请从订阅文件中找到 `nameserver-policy` 配置，按 `域名通配=解析器` 填入 `PROXY_DNS_POLICY`：
+
+```
+PROXY_DNS_POLICY=+.v51124-4.qpon=tcp://your-resolver.example:8080
+```
+
+注意：健康检查探测 `https://www.google.com/generate_204` 可能仍然成功（走到了少数可解析的节点），从而掩盖该问题，建议同时设置 `PROXY_TEST_URL`。
 
 ## 开启通知
 
