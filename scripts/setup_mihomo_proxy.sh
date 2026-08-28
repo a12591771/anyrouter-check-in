@@ -136,20 +136,37 @@ if [[ "${READY}" != "true" ]]; then
 	exit 0
 fi
 
-echo "[SUCCESS] Proxy is ready: ${PROXY_URL}"
+echo "[INFO] Proxy port is listening: ${PROXY_URL}"
 
-# 探测目标可能本身不经过 WAF 校验，健康检查通过并不代表流量真的走了节点。
-# 打印直连与代理出口 IP，便于确认节点是否生效。
+# 订阅节点加载需要时间，加载完成前 proxy-group 为空，请求会直连，
+# 此时连通性检查仍会通过。必须确认出口 IP 已改变，才说明流量真的走了节点。
 DIRECT_IP=$(curl -fsS --max-time 15 https://api.ipify.org 2>/dev/null || echo "unknown")
-PROXY_IP=$(curl -fsS -x "${PROXY_URL}" --max-time 20 https://api.ipify.org 2>/dev/null || echo "unknown")
 echo "[INFO] Direct egress IP: ${DIRECT_IP}"
-echo "[INFO] Proxy egress IP: ${PROXY_IP}"
+
+PROXY_IP="unknown"
+for attempt in $(seq 1 30); do
+	PROXY_IP=$(curl -fsS -x "${PROXY_URL}" --max-time 20 https://api.ipify.org 2>/dev/null || echo "unknown")
+	if [[ "${PROXY_IP}" != "unknown" && "${PROXY_IP}" != "${DIRECT_IP}" ]]; then
+		break
+	fi
+	echo "[INFO] Waiting for proxy egress to change (${attempt}/30, current: ${PROXY_IP})..."
+	sleep 3
+done
+
 if [[ "${PROXY_IP}" == "unknown" || "${PROXY_IP}" == "${DIRECT_IP}" ]]; then
-	echo "[WARN] Proxy egress IP not confirmed; traffic may bypass the proxy"
+	echo "[FAILED] Proxy egress IP never changed; traffic is bypassing the proxy"
 	echo "[INFO] mihomo log:"
-	tail -n 20 mihomo.log || true
-	echo "[INFO] Provider nodes: $(grep -c 'server:' subscription.yaml 2>/dev/null || echo 0)"
+	tail -n 30 mihomo.log || true
+	if [[ -f mihomo.pid ]]; then
+		kill "$(cat mihomo.pid)" 2>/dev/null || true
+	fi
+	if [[ "${PROXY_REQUIRED}" == "true" ]]; then
+		exit 1
+	fi
+	exit 0
 fi
+
+echo "[SUCCESS] Proxy is ready: ${PROXY_URL} (egress ${PROXY_IP})"
 
 echo "[INFO] Proxy is scoped to CHECKIN_PROXY_URL (browser/python only, not global HTTP_PROXY)"
 if [[ -n "${GITHUB_ENV:-}" ]]; then
