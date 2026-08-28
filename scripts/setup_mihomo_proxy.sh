@@ -126,6 +126,17 @@ if [[ "${READY}" != "true" ]]; then
 fi
 
 echo "[SUCCESS] Proxy is ready: ${PROXY_URL}"
+
+# 探测目标可能本身不经过 WAF 校验，健康检查通过并不代表流量真的走了节点。
+# 打印直连与代理出口 IP，便于确认节点是否生效。
+DIRECT_IP=$(curl -fsS --max-time 15 https://api.ipify.org 2>/dev/null || echo "unknown")
+PROXY_IP=$(curl -fsS -x "${PROXY_URL}" --max-time 20 https://api.ipify.org 2>/dev/null || echo "unknown")
+echo "[INFO] Direct egress IP: ${DIRECT_IP}"
+echo "[INFO] Proxy egress IP: ${PROXY_IP}"
+if [[ "${PROXY_IP}" == "unknown" || "${PROXY_IP}" == "${DIRECT_IP}" ]]; then
+	echo "[WARN] Proxy egress IP not confirmed; traffic may bypass the proxy"
+fi
+
 echo "[INFO] Proxy is scoped to CHECKIN_PROXY_URL (browser/python only, not global HTTP_PROXY)"
 if [[ -n "${GITHUB_ENV:-}" ]]; then
 	echo "CHECKIN_PROXY_URL=${PROXY_URL}" >> "${GITHUB_ENV}"
