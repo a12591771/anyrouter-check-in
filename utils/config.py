@@ -16,6 +16,7 @@ class ProviderConfig:
 	name: str
 	domain: str
 	login_path: str = '/login'
+	login_api_path: str | None = None
 	sign_in_path: str | None = '/api/user/sign_in'
 	user_info_path: str = '/api/user/self'
 	api_user_key: str = 'new-api-user'
@@ -54,6 +55,7 @@ class ProviderConfig:
 			name=name,
 			domain=data['domain'],
 			login_path=data.get('login_path', defaults.login_path if defaults else '/login'),
+			login_api_path=data.get('login_api_path', defaults.login_api_path if defaults else None),
 			sign_in_path=data.get('sign_in_path', defaults.sign_in_path if defaults else '/api/user/sign_in'),
 			user_info_path=data.get('user_info_path', defaults.user_info_path if defaults else '/api/user/self'),
 			api_user_key=data.get('api_user_key', defaults.api_user_key if defaults else 'new-api-user'),
@@ -66,6 +68,10 @@ class ProviderConfig:
 	def needs_waf_cookies(self) -> bool:
 		"""判断是否需要获取 WAF cookies"""
 		return self.bypass_method == 'waf_cookies'
+
+	def supports_api_login(self) -> bool:
+		"""判断是否可直接调用登录接口（无需浏览器）"""
+		return bool(self.login_api_path)
 
 	def needs_manual_check_in(self) -> bool:
 		"""判断是否需要手动调用签到接口"""
@@ -98,6 +104,7 @@ class AppConfig:
 				name='agentrouter',
 				domain='https://agentrouter.org',
 				login_path='/login',
+				login_api_path='/api/user/login',  # 直接调用登录接口，签到由服务端在登录时完成
 				sign_in_path=None,  # 无需签到接口，查询用户信息时自动完成签到
 				user_info_path='/api/user/self',
 				api_user_key='new-api-user',

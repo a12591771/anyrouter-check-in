@@ -59,6 +59,8 @@ jobs:
           ${{ runner.os }}-cloakbrowser-
 
     - name: 安装 CloakBrowser
+      # 仅浏览器登录的平台需要（如 anyrouter）；安装失败不应阻塞 API 登录的平台
+      continue-on-error: true
       run: |
         uv run python -m cloakbrowser install
         echo "✅ CloakBrowser 安装完成"

@@ -41,6 +41,9 @@ from utils.proxy import get_playwright_proxy, get_proxy_server
 load_dotenv()
 
 BALANCE_HASH_FILE = 'balance_hash.txt'
+DEFAULT_USER_AGENT = (
+	'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36'
+)
 
 
 def load_balance_hash():
@@ -136,6 +139,75 @@ async def get_waf_cookies_with_browser(
 	except Exception as e:
 		print(f'[FAILED] {account_name}: Error occurred while getting WAF cookies: {e}')
 		await browser.close()
+		return None
+
+
+def login_with_api(
+	account_name: str,
+	provider_config,
+	email: str,
+	password: str,
+	*,
+	use_proxy: bool = False,
+) -> BrowserLoginResult | None:
+	"""直接调用登录接口完成登录，返回 cookies 与用户标识。
+
+	相比浏览器登录，该方式不受 WAF 滑块验证影响；对于在登录时发放签到奖励的
+	平台（如 agentrouter），登录本身即完成签到。
+	"""
+	print(f'[PROCESSING] {account_name}: Logging in via API...')
+
+	login_url = f'{provider_config.domain}{provider_config.login_api_path}'
+	client_kwargs: dict = {'http2': True, 'timeout': 30.0}
+	proxy_url = get_proxy_server(use_proxy=use_proxy)
+	if proxy_url:
+		client_kwargs['proxy'] = proxy_url
+		print(f'[INFO] {account_name}: HTTP client proxy enabled')
+	elif use_proxy:
+		print(f'[WARN] {account_name}: Provider requires proxy but CHECKIN_PROXY_URL is not set')
+
+	headers = {
+		'User-Agent': DEFAULT_USER_AGENT,
+		'Accept': 'application/json, text/plain, */*',
+		'Content-Type': 'application/json',
+		'Referer': f'{provider_config.domain}{provider_config.login_path}',
+		'Origin': provider_config.domain,
+	}
+
+	try:
+		with httpx.Client(**client_kwargs) as client:
+			response = client.post(login_url, headers=headers, json={'username': email, 'password': password})
+
+			if response.status_code != 200:
+				print(f'[FAILED] {account_name}: Login failed - HTTP {response.status_code}')
+				return None
+
+			try:
+				result = response.json()
+			except json.JSONDecodeError:
+				print(f'[FAILED] {account_name}: Login failed - response is not JSON (likely blocked by WAF)')
+				return None
+
+			if not result.get('success'):
+				print(f'[FAILED] {account_name}: Login failed - {result.get("message", "Unknown error")}')
+				return None
+
+			cookies = dict(client.cookies)
+			if not cookies:
+				print(f'[FAILED] {account_name}: Login succeeded but no cookies were returned')
+				return None
+
+			user_data = result.get('data') or {}
+			api_user = str(user_data['id']) if user_data.get('id') is not None else None
+
+			success_msg = f'[SUCCESS] {account_name}: Login successful, got {len(cookies)} cookies'
+			if is_debug_enabled() and api_user:
+				success_msg += f', api_user={api_user}'
+			print(success_msg)
+			return BrowserLoginResult(cookies=cookies, api_user=api_user)
+
+	except Exception as e:
+		print(f'[FAILED] {account_name}: Error during API login - {str(e)[:80]}')
 		return None
 
 
@@ -369,17 +441,27 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 	if account.has_login_credentials():
 		print(f'[INFO] {account_name}: Attempting email/password login (priority)...')
 		assert account.email is not None and account.password is not None
-		login_result = await login_with_credentials(
-			account_name,
-			provider_config,
-			account.provider,
-			account.email,
-			account.password,
-		)
+		if provider_config.supports_api_login():
+			login_result = login_with_api(
+				account_name,
+				provider_config,
+				account.email,
+				account.password,
+				use_proxy=provider_config.use_proxy,
+			)
+			auth_method = 'email/password (API)'
+		else:
+			login_result = await login_with_credentials(
+				account_name,
+				provider_config,
+				account.provider,
+				account.email,
+				account.password,
+			)
+			auth_method = 'email/password (browser)'
 		if login_result:
 			all_cookies = login_result.cookies
 			resolved_api_user = login_result.api_user
-			auth_method = 'email/password'
 		else:
 			print(f'[FAILED] {account_name}: Email/password login failed, will not use stale session cookies')
 			return False, None, None
@@ -432,7 +514,7 @@ def run_check_in_requests(
 			client.cookies.update(all_cookies)
 
 			headers = {
-				'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+				'User-Agent': DEFAULT_USER_AGENT,
 				'Accept': 'application/json, text/plain, */*',
 				'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
 				'Accept-Encoding': 'gzip, deflate, br, zstd',
