@@ -80,7 +80,7 @@
 
 **字段说明**：
 
-- `email` + `password`：推荐的浏览器登录方式，登录成功后会自动获取 cookies 与用户标识
+- `email` + `password`：推荐的登录方式，登录成功后会自动获取 cookies 与用户标识。provider 配置了 `login_api_path` 时直接调用登录接口（如 `agentrouter`），否则使用浏览器填写登录表单
 - `cookies`：兼容旧版的 session cookies 登录方式
 - `api_user`：session cookies 登录时用于请求头的 new-api-user 参数；邮箱密码登录可省略
 - `provider` (可选)：指定使用的服务商，默认为 `anyrouter`
@@ -232,6 +232,7 @@
 
 - `domain` (必需)：服务商的域名
 - `login_path` (可选)：登录页面路径，默认为 `/login`（仅在 `bypass_method` 为 `"waf_cookies"` 时使用）
+- `login_api_path` (可选)：登录接口路径。设置后使用邮箱密码直接调用该接口登录，不再启动浏览器，可绕过滑块验证；不设置则使用 CloakBrowser 填写登录表单
 - `sign_in_path` (可选)：签到 API 路径，默认为 `/api/user/sign_in`
 - `user_info_path` (可选)：用户信息 API 路径，默认为 `/api/user/self`
 - `api_user_key` (可选)：API 用户标识请求头名称，默认为 `new-api-user`
@@ -262,6 +263,7 @@
   - `sign_in_path: "/api/user/sign_in"`
 - `agentrouter`：
   - `bypass_method: "waf_cookies"`（需要获取 `acw_tc`）
+  - `login_api_path: "/api/user/login"`（邮箱密码直接调用登录接口，不启动浏览器；签到由服务端在登录时发放）
   - `sign_in_path: null`（查询用户信息时自动签到）
   - `use_proxy: true`
 
@@ -277,6 +279,7 @@
 在仓库 Settings -> Environments -> production -> Environment secrets 中添加：
 
 - `PROXY_SUBSCRIPTION_URL`：Clash/Mihomo 订阅链接。设置后，workflow 会运行 `scripts/setup_mihomo_proxy.sh`，启动本地代理并写入 `CHECKIN_PROXY_URL`。
+- `PROXY_DNS_POLICY`（可选）：节点域名专用解析器，格式 `域名通配=解析器`，多条用英文逗号分隔。
 
 本地运行时也可以直接使用已有代理：
 
@@ -285,7 +288,19 @@ CHECKIN_PROXY_URL=http://127.0.0.1:7890
 PROVIDERS={"agentrouter":{"use_proxy":true}}
 ```
 
-如果使用订阅脚本，默认会用 `https://www.google.com/generate_204` 测试代理连通性；也可以通过 `PROXY_TEST_URL` 覆盖。
+如果使用订阅脚本，默认会用 `https://www.google.com/generate_204` 测试代理连通性；也可以通过 `PROXY_TEST_URL` 覆盖。建议改为目标站点的免登录接口（例如 `https://agentrouter.org/api/status`），这样 `url-test` 选出的是能访问目标站点的节点。
+
+### 节点域名无法解析（`PROXY_DNS_POLICY`）
+
+部分机场的节点地址使用私有 TLD（例如 `*.v51124-4.qpon`），公共 DNS 无法解析。订阅文件内通常自带 `dns.nameserver-policy` 指向专用解析器，但 mihomo 只读取主配置的 `dns` 段，不会继承 `proxy-providers` 订阅内的 DNS 配置，导致所有节点解析失败并回落到 `127.127.127.x`，表现为 `connection refused` 或 `ERR_CONNECTION_CLOSED`。
+
+此时请从订阅文件中找到 `nameserver-policy` 配置，按 `域名通配=解析器` 填入 `PROXY_DNS_POLICY`：
+
+```
+PROXY_DNS_POLICY=+.v51124-4.qpon=tcp://your-resolver.example:8080
+```
+
+注意：健康检查探测 `https://www.google.com/generate_204` 可能仍然成功（走到了少数可解析的节点），从而掩盖该问题，建议同时设置 `PROXY_TEST_URL`。
 
 ## 开启通知
 

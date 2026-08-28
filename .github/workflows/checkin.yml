@@ -59,6 +59,8 @@ jobs:
           ${{ runner.os }}-cloakbrowser-
 
     - name: 安装 CloakBrowser
+      # 仅浏览器登录的平台需要（如 anyrouter）；安装失败不应阻塞 API 登录的平台
+      continue-on-error: true
       run: |
         uv run python -m cloakbrowser install
         echo "✅ CloakBrowser 安装完成"
@@ -83,9 +85,10 @@ jobs:
     - name: 配置代理
       env:
         PROXY_SUBSCRIPTION_URL: ${{ secrets.PROXY_SUBSCRIPTION_URL }}
-        PROXY_TEST_URL: https://www.google.com/generate_204
+        PROXY_DNS_POLICY: ${{ secrets.PROXY_DNS_POLICY }}
+        PROXY_TEST_URL: ${{ secrets.PROXY_TEST_URL || 'https://www.google.com/generate_204' }}
         MIHOMO_VERSION: v1.19.27
-        PROXY_REQUIRED: false
+        PROXY_REQUIRED: ${{ secrets.PROXY_REQUIRED || 'false' }}
       run: bash scripts/setup_mihomo_proxy.sh
 
     - name: 执行签到

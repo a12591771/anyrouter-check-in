@@ -5,6 +5,9 @@
 #   PROXY_TEST_URL          探测目标，默认 https://www.google.com/generate_204
 #   PROXY_REQUIRED          true 时探测失败则退出 1
 #   PROXY_PORT              本地 mixed-port，默认 7890
+#   PROXY_DNS_POLICY        可选，节点域名专用解析器，格式 "域名通配=解析器"，
+#                           多条用英文逗号分隔。部分机场使用私有 TLD（如 *.qpon），
+#                           公共 DNS 无法解析，需要订阅提供的专用解析器。
 
 set -euo pipefail
 
@@ -18,6 +21,7 @@ PROXY_PORT="${PROXY_PORT:-7890}"
 PROXY_TEST_URL="${PROXY_TEST_URL:-https://www.google.com/generate_204}"
 MIHOMO_VERSION="${MIHOMO_VERSION:-v1.19.0}"
 PROXY_REQUIRED="${PROXY_REQUIRED:-false}"
+PROXY_DNS_POLICY="${PROXY_DNS_POLICY:-}"
 
 mkdir -p "${PROXY_DIR}"
 cd "${PROXY_DIR}"
@@ -36,6 +40,31 @@ gunzip -f "${ARCHIVE}"
 chmod +x "mihomo-linux-amd64-${MIHOMO_VERSION}"
 MIHOMO_BIN="${PROXY_DIR}/mihomo-linux-amd64-${MIHOMO_VERSION}"
 
+# mihomo 只读取主配置的 dns 段，不会继承 proxy-providers 订阅内的 dns 配置。
+# 若节点域名使用私有 TLD，需在此显式声明专用解析器，否则节点全部解析失败。
+DNS_SECTION=""
+if [[ -n "${PROXY_DNS_POLICY}" ]]; then
+	DNS_SECTION=$(
+		printf 'dns:\n'
+		printf '  enable: true\n'
+		printf '  nameserver:\n'
+		printf '    - 223.5.5.5\n'
+		printf '    - 8.8.8.8\n'
+		printf '  nameserver-policy:\n'
+		while IFS= read -r policy; do
+			policy="${policy#"${policy%%[![:space:]]*}"}"
+			policy="${policy%"${policy##*[![:space:]]}"}"
+			[[ -z "${policy}" ]] && continue
+			if [[ "${policy}" != *=* ]]; then
+				echo "[WARN] Ignored malformed PROXY_DNS_POLICY entry: ${policy}" >&2
+				continue
+			fi
+			printf '    "%s": %s\n' "${policy%%=*}" "${policy#*=}"
+		done <<< "${PROXY_DNS_POLICY//,/$'\n'}"
+	)
+	echo "[INFO] Custom DNS policy enabled for node resolution"
+fi
+
 cat > config.yaml <<EOF
 mixed-port: ${PROXY_PORT}
 allow-lan: false
@@ -43,7 +72,7 @@ ipv6: false
 mode: rule
 log-level: warning
 unified-delay: true
-
+${DNS_SECTION}
 proxy-providers:
   subscription:
     type: http
@@ -70,6 +99,17 @@ rules:
 EOF
 
 echo "[INFO] Starting mihomo on 127.0.0.1:${PROXY_PORT}..."
+
+# 订阅接口可能拒绝 CI 出口 IP 并返回错误页，此时节点列表为空，
+# proxy-group 会退化为直连，健康检查仍可能通过，掩盖问题。
+SUB_STATUS=$(curl -sS -o sub_probe.yaml -w '%{http_code}' --max-time 30 "${PROXY_SUBSCRIPTION_URL}" 2>/dev/null || echo "000")
+SUB_BYTES=$(wc -c < sub_probe.yaml 2>/dev/null || echo 0)
+SUB_NODES=$(grep -c 'server:' sub_probe.yaml 2>/dev/null || echo 0)
+echo "[INFO] Subscription probe: http=${SUB_STATUS} bytes=${SUB_BYTES} nodes=${SUB_NODES}"
+if [[ "${SUB_NODES}" -eq 0 ]]; then
+	echo "[WARN] Subscription returned no nodes; the provider may reject this runner's IP"
+fi
+
 nohup "${MIHOMO_BIN}" -d "${PROXY_DIR}" -f config.yaml > mihomo.log 2>&1 &
 echo $! > mihomo.pid
 
@@ -96,7 +136,38 @@ if [[ "${READY}" != "true" ]]; then
 	exit 0
 fi
 
-echo "[SUCCESS] Proxy is ready: ${PROXY_URL}"
+echo "[INFO] Proxy port is listening: ${PROXY_URL}"
+
+# 订阅节点加载需要时间，加载完成前 proxy-group 为空，请求会直连，
+# 此时连通性检查仍会通过。必须确认出口 IP 已改变，才说明流量真的走了节点。
+DIRECT_IP=$(curl -fsS --max-time 15 https://api.ipify.org 2>/dev/null || echo "unknown")
+echo "[INFO] Direct egress IP: ${DIRECT_IP}"
+
+PROXY_IP="unknown"
+for attempt in $(seq 1 30); do
+	PROXY_IP=$(curl -fsS -x "${PROXY_URL}" --max-time 20 https://api.ipify.org 2>/dev/null || echo "unknown")
+	if [[ "${PROXY_IP}" != "unknown" && "${PROXY_IP}" != "${DIRECT_IP}" ]]; then
+		break
+	fi
+	echo "[INFO] Waiting for proxy egress to change (${attempt}/30, current: ${PROXY_IP})..."
+	sleep 3
+done
+
+if [[ "${PROXY_IP}" == "unknown" || "${PROXY_IP}" == "${DIRECT_IP}" ]]; then
+	echo "[FAILED] Proxy egress IP never changed; traffic is bypassing the proxy"
+	echo "[INFO] mihomo log:"
+	tail -n 30 mihomo.log || true
+	if [[ -f mihomo.pid ]]; then
+		kill "$(cat mihomo.pid)" 2>/dev/null || true
+	fi
+	if [[ "${PROXY_REQUIRED}" == "true" ]]; then
+		exit 1
+	fi
+	exit 0
+fi
+
+echo "[SUCCESS] Proxy is ready: ${PROXY_URL} (egress ${PROXY_IP})"
+
 echo "[INFO] Proxy is scoped to CHECKIN_PROXY_URL (browser/python only, not global HTTP_PROXY)"
 if [[ -n "${GITHUB_ENV:-}" ]]; then
 	echo "CHECKIN_PROXY_URL=${PROXY_URL}" >> "${GITHUB_ENV}"
