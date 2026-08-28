@@ -99,6 +99,17 @@ rules:
 EOF
 
 echo "[INFO] Starting mihomo on 127.0.0.1:${PROXY_PORT}..."
+
+# 订阅接口可能拒绝 CI 出口 IP 并返回错误页，此时节点列表为空，
+# proxy-group 会退化为直连，健康检查仍可能通过，掩盖问题。
+SUB_STATUS=$(curl -sS -o sub_probe.yaml -w '%{http_code}' --max-time 30 "${PROXY_SUBSCRIPTION_URL}" 2>/dev/null || echo "000")
+SUB_BYTES=$(wc -c < sub_probe.yaml 2>/dev/null || echo 0)
+SUB_NODES=$(grep -c 'server:' sub_probe.yaml 2>/dev/null || echo 0)
+echo "[INFO] Subscription probe: http=${SUB_STATUS} bytes=${SUB_BYTES} nodes=${SUB_NODES}"
+if [[ "${SUB_NODES}" -eq 0 ]]; then
+	echo "[WARN] Subscription returned no nodes; the provider may reject this runner's IP"
+fi
+
 nohup "${MIHOMO_BIN}" -d "${PROXY_DIR}" -f config.yaml > mihomo.log 2>&1 &
 echo $! > mihomo.pid
 
@@ -135,6 +146,9 @@ echo "[INFO] Direct egress IP: ${DIRECT_IP}"
 echo "[INFO] Proxy egress IP: ${PROXY_IP}"
 if [[ "${PROXY_IP}" == "unknown" || "${PROXY_IP}" == "${DIRECT_IP}" ]]; then
 	echo "[WARN] Proxy egress IP not confirmed; traffic may bypass the proxy"
+	echo "[INFO] mihomo log:"
+	tail -n 20 mihomo.log || true
+	echo "[INFO] Provider nodes: $(grep -c 'server:' subscription.yaml 2>/dev/null || echo 0)"
 fi
 
 echo "[INFO] Proxy is scoped to CHECKIN_PROXY_URL (browser/python only, not global HTTP_PROXY)"
